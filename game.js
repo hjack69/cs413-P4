@@ -12,22 +12,37 @@ const MAX_MAP = 30;
 const TILE_SIZE = 32;
 const SCALE = 2;
 
-const RIGHT_BTNS = [39, 68];
-const LEFT_BTNS = [37, 65];
-const UP_BTNS = [38, 87];
-const DOWN_BTNS = [40, 83];
+const RIGHT_BTNS = [68];
+const LEFT_BTNS = [65];
+const UP_BTNS = [87];
+const DOWN_BTNS = [83];
+const LEFT_FIRE_BTN = 37;
+const RIGHT_FIRE_BTN = 39;
+const DOWN_FIRE_BTN = 40;
+const UP_FIRE_BTN = 38;
 const MUTE_BTN = 77;
 
 var rightPress = false;
 var leftPress = false;
 var upPress = false;
 var downPress = false;
-var firePress = false;
+var leftFirePress = false;
+var rightFirePress = false;
+var downFirePress = false;
+var upFirePress = false;
 
-var coins = 0;
+var coins = [];
+var collected = 0;
+var numCoins = randint(10, 15);
 var kiaRects = 0;
-var hearts = 3;
+var lifeManager;
+var numHearts = randint(10, 15);
+var hearts = [];
+var numEnemies = randint(5, 10);
+var enemies = [];
 var ammo = 0;
+
+var muted = false;
 
 function randint(min, max) { return Math.floor(Math.random() * (max-min)) + min; }
 
@@ -89,6 +104,11 @@ HUDScreen.position.set(0, 0);
 HUDScreen.transparent = false;
 HUDScreen.backgroundColor = BGCOLOR;
 
+var coinText = new PIXI.Text('0/'+numCoins, {fill: 0xffffff});
+HUDScreen.addChild(coinText);
+coinText.position.set(32, 100);
+
+
 function hideAll() {
     loadingScreen.visible = false;
     welcomeScreen.visible = false;
@@ -116,7 +136,7 @@ var screen = StateMachine.create({
     ],
     callbacks: {
         onloadingScreen: function() {loadingScreen.visible = true;},
-        ongameScreen: function() {HUDScreen.visible = true; gameScreen.visible = true;},
+        ongameScreen: function() {resetGame(); HUDScreen.visible = true; gameScreen.visible = true;},
         onwelcomeScreen: function() {
             welcomeScreen.alpha = 0;
             welcomeScreen.visible = true;
@@ -197,10 +217,189 @@ function generateMap() {
     }
 }
 
+function Coin(master) {
+    this.master = master;
+    this.sprite = new PIXI.Sprite.fromFrame('coin');
+    this.master.addChild(this.sprite);
+
+    this.remove = function() {
+        this.master.removeChild(this.sprite);
+    };
+
+    this.spawn = function() {
+        var newX = randint(1, map_width) * TILE_SIZE;
+        var newY = randint(1, map_height) * TILE_SIZE;
+        while (map[newY/TILE_SIZE][newX/TILE_SIZE] > 0) {
+            newX = randint(1, map_width) * TILE_SIZE;
+            newY = randint(1, map_height) * TILE_SIZE;
+        }
+        this.sprite.position.set(newX, newY);
+        map[newY/TILE_SIZE][newX/TILE_SIZE] = 3;
+    };
+    this.spawn();
+}
+
+function spawnCoins(num) {
+    coins = [];
+    for (var i = 0; i < num; i++) {
+        coins.push(new Coin(mapContainer));
+    }
+}
+
+function Enemy(master) {
+    this.master = master;
+    this.container = new PIXI.Container();
+    this.container.width = 40;
+    this.container.height = 32;
+    this.master.addChild(this.container);
+    this.standing = new PIXI.extras.MovieClip.fromFrames([
+        'circ still 1', 'circ still 2', 'circ still 3', 'circ still 4', 'circ still 3', 'circ still 2'
+    ]);
+    this.standing.anchor.set(0.5, 0.5);
+    this.standing.position.set(16, 16);
+    this.standing.visible = false;
+    this.standing.animationSpeed = 0.1;
+    this.container.addChild(this.standing);
+    this.movingRight = new PIXI.extras.MovieClip.fromFrames([
+        "circ right 1", "circ right 2"
+    ]);
+    this.movingRight.anchor.set(0.5, 0.5);
+    this.movingRight.position.set(16, 16);
+    this.movingRight.visible = false;
+    this.movingRight.animationSpeed = 0.1;
+    this.container.addChild(this.movingRight);
+    this.movingLeft = new PIXI.extras.MovieClip.fromFrames([
+        "circ left 1", "circ left 2"
+    ]);
+    this.movingLeft.anchor.set(0.5, 0.5);
+    this.movingLeft.position.set(16, 16);
+    this.movingLeft.visible = false;
+    this.movingLeft.animationSpeed = 0.1;
+    this.container.addChild(this.movingLeft);
+    this.movingDown = new PIXI.extras.MovieClip.fromFrames([
+        "circ down 1", 'circ down 2'
+    ]);
+    this.movingDown.anchor.set(0.5, 0.5);
+    this.movingDown.position.set(16, 16);
+    this.movingDown.visible = false;
+    this.movingDown.animationSpeed = 0.1;
+    this.container.addChild(this.movingDown);
+    this.movingUp = new PIXI.extras.MovieClip.fromFrames([
+        "circ up 1", 'circ up 2'
+    ]);
+    this.movingUp.anchor.set(0.5, 0.5);
+    this.movingUp.position.set(16, 16);
+    this.movingUp.visible = false;
+    this.movingUp.animationSpeed = 0.1;
+    this.container.addChild(this.movingUp);
+    this.animations = [this.standing, this.movingRight, this.movingLeft, this.movingDown, this.movingUp];
+
+    this.sword = new PIXI.Sprite.fromFrame('sword');
+    this.sword.visible = true;
+    this.master.addChild(this.sword);
+    this.sword.pivot.set(16, 25);
+
+    this.canMove = true;
+    this.canAttack = true;
+    this.lastDirection = '';
+
+    this.move = function(direction) {
+        if (this.canMove) {
+            var newDest = new PIXI.Point(this.container.x, this.container.y);
+            for (var i = 0; i < this.animations.length; i++) {
+                this.animations[i].visible = false;
+                this.animations[i].stop();
+            }
+            if (direction == "standing") {
+                this.standing.visible = true;
+                this.standing.play();
+                this.canAttack = true;
+            }
+            else if (direction == "right") {
+                this.lastDirection = "right";
+                this.movingRight.visible = true;
+                this.movingRight.play();
+                newDest.x += 32;
+                this.canAttack = false;
+            }
+            else if (direction == "left") {
+                this.lastDirection = "right";
+                this.movingLeft.visible = true;
+                this.movingLeft.play();
+                newDest.x -= 32;
+                this.canAttack = false;
+            }
+            else if (direction == "up") {
+                this.lastDirection = "right";
+                this.movingUp.visible = true;
+                this.movingUp.play();
+                newDest.y -= 32;
+                this.canAttack = false;
+            }
+            else if (direction == "down") {
+                this.lastDirection = "right";
+                this.movingDown.visible = true;
+                this.movingDown.play();
+                newDest.y += 32;
+                this.canAttack = false;
+            }
+            if ([0, 3, 4, 5].indexOf(map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)]) > -1) {
+                this.canMove = false;
+                var self = this;
+                if (direction == "left" || direction == 'up') {
+                    createjs.Tween.get(this.sword).to({x: newDest.x, y: newDest.y+25}, 200);
+                }
+                else {
+                    createjs.Tween.get(this.sword).to({x: newDest.x + 32, y: newDest.y+25}, 200);
+                }
+                createjs.Tween.get(this.container).to({x: newDest.x, y: newDest.y}, 200).call(function () {
+                    self.canMove = true;
+                });
+            }
+        }
+    };
+
+    this.attack = function(direction) {
+        if (this.canAttack) {
+            if (direction == 'left') {
+                createjs.Tween.get(this.sword).to({x: this.container.x}, 100).to({rotation: -2}, 150).to({rotation: 0}, 150);
+            }
+            else if (direction == 'right') {
+                createjs.Tween.get(this.sword).to({x: this.container.x + 32}, 100).to({rotation: 2}, 150).to({rotation: 0}, 150);
+            }
+            else if (direction == 'down') {
+                createjs.Tween.get(this.sword).to({x: this.container.x, rotation: 5}, 150).to({
+                    x: this.container.x + 32,
+                    rotation: 3
+                }, 150).to({rotation: 0}, 100);
+            }
+            else if (direction == 'up') {
+                createjs.Tween.get(this.sword).to({
+                    x: this.container.x,
+                    y: this.container.y,
+                    rotation: -1
+                }, 150).to({x: this.container.x + 32, rotation: 1}, 150).to({rotation: 0}, 100);
+            }
+        }
+    };
+
+    this.spawn = function() {
+        var newX = randint(1, map_width) * TILE_SIZE;
+        var newY = randint(1, map_height) * TILE_SIZE;
+        while (map[newY/TILE_SIZE][newX/TILE_SIZE] > 0) {
+            newX = randint(1, map_width) * TILE_SIZE;
+            newY = randint(1, map_height) * TILE_SIZE;
+        }
+        this.sword.position.set(newX+16, newY);
+        this.container.position.set(newX, newY);
+    };
+    this.spawn();
+}
+
 function Hero(master) {
     this.master = master;
     this.container = new PIXI.Container();
-    this.container.width = 32;
+    this.container.width = 40;
     this.container.height = 32;
     this.master.addChild(this.container);
     this.standing = new PIXI.extras.MovieClip.fromFrames([
@@ -245,8 +444,14 @@ function Hero(master) {
     this.container.addChild(this.movingUp);
     this.animations = [this.standing, this.movingRight, this.movingLeft, this.movingDown, this.movingUp];
 
-    var self = this;
+    this.sword = new PIXI.Sprite.fromFrame('sword');
+    this.sword.visible = true;
+    this.master.addChild(this.sword);
+    this.sword.pivot.set(16, 25);
+
     this.canMove = true;
+    this.canAttack = true;
+    this.lastDirection = '';
 
     this.move = function(direction) {
         if (this.canMove) {
@@ -258,35 +463,116 @@ function Hero(master) {
             if (direction == "standing") {
                 this.standing.visible = true;
                 this.standing.play();
+                this.canAttack = true;
             }
             else if (direction == "right") {
+                this.lastDirection = "right";
                 this.movingRight.visible = true;
                 this.movingRight.play();
                 newDest.x += 32;
+                this.canAttack = false;
             }
             else if (direction == "left") {
+                this.lastDirection = "right";
                 this.movingLeft.visible = true;
                 this.movingLeft.play();
                 newDest.x -= 32;
+                this.canAttack = false;
             }
             else if (direction == "up") {
+                this.lastDirection = "right";
                 this.movingUp.visible = true;
                 this.movingUp.play();
                 newDest.y -= 32;
+                this.canAttack = false;
             }
             else if (direction == "down") {
+                this.lastDirection = "right";
                 this.movingDown.visible = true;
                 this.movingDown.play();
                 newDest.y += 32;
+                this.canAttack = false;
             }
-            if (map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)] == 0) {
+            if ([0, 3, 4].indexOf(map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)]) > -1) {
+                if (map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)] == 3) {
+                    collected++;
+                    coinText.text = ""+collected+"/"+numCoins;
+                    for (i = 0; i < coins.length; i++) {
+                        if (coins[i].sprite.x == newDest.x && coins[i].sprite.y == newDest.y) {
+                            map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)] = 0;
+                            coins[i].remove();
+                            coins.splice(i, 1);
+                        }
+                    }
+                }
+                if (map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)] == 4) {
+                    lifeManager.increase();
+                    for (i = 0; i < hearts.length; i++) {
+                        if (hearts[i].sprite.x == newDest.x && hearts[i].sprite.y == newDest.y) {
+                            map[Math.floor(newDest.y/32)][Math.floor(newDest.x/32)] = 0;
+                            hearts[i].remove();
+                            hearts.splice(i, 1);
+                        }
+                    }
+                }
                 this.canMove = false;
                 var self = this;
+                if (direction == "left" || direction == 'up') {
+                    createjs.Tween.get(this.sword).to({x: newDest.x, y: newDest.y+25}, 200);
+                }
+                else {
+                    createjs.Tween.get(this.sword).to({x: newDest.x + 32, y: newDest.y+25}, 200);
+                }
                 createjs.Tween.get(this.container).to({x: newDest.x, y: newDest.y}, 200).call(function () {
                     self.canMove = true;
-                    self.x = self.container.x+8;
-                    self.y = self.container.y+8;
                 });
+            }
+            if (direction != 'standing') {
+                for (i = 0; i < numEnemies; i++) {
+                    if (enemies[i].container.x + 32 == this.container.x && enemies[i].container.y == this.container.y) {
+                        enemies[i].attack('right');
+                        lifeManager.decrease();
+                    }
+                    else if (enemies[i].container.x - 32 == this.container.x && enemies[i].container.y == this.container.y) {
+                        enemies[i].attack('left');
+                        lifeManager.decrease();
+                    }
+                    else if (enemies[i].container.y + 32 == this.container.y && enemies[i].container.x == this.container.x) {
+                        enemies[i].attack('down');
+                        lifeManager.decrease();
+                    }
+                    else if (enemies[i].container.y - 32 == this.container.y && enemies[i].container.x == this.container.x) {
+                        enemies[i].attack('up');
+                        lifeManager.decrease();
+                    }
+                    else {
+                        enemies[i].move(['right', 'left', 'up', 'down'][randint(0, 3)]);
+                    }
+                }
+            }
+        }
+    };
+
+    this.attack = function(direction) {
+        if (this.canAttack) {
+            if (direction == 'left') {
+                createjs.Tween.get(this.sword).to({x: this.container.x}, 100).to({rotation: -2}, 150).to({rotation: 0}, 150);
+            }
+            else if (direction == 'right') {
+                createjs.Tween.get(this.sword).to({x: this.container.x + 32}, 100).to({rotation: 2}, 150).to({rotation: 0}, 150);
+            }
+            else if (direction == 'down') {
+                createjs.Tween.get(this.sword).to({x: this.container.x, rotation: 5}, 150).to({
+                    x: this.container.x + 32,
+                    rotation: 3
+                }, 150).to({rotation: 0}, 100);
+            }
+            else if (direction == 'up') {
+                createjs.Tween.get(this.sword).to({
+                    x: this.container.x,
+                    y: this.container.y,
+                    rotation: -1
+                }, 150).to({x: this.container.x + 32, rotation: 1}, 150).to({rotation: 0}, 100);
             }
         }
     };
@@ -298,23 +584,196 @@ function Hero(master) {
             newX = randint(1, map_width) * TILE_SIZE;
             newY = randint(1, map_height) * TILE_SIZE;
         }
-        console.log(""+newX+", "+newY);
         this.canMove = false;
         var self = this;
+        createjs.Tween.get(this.sword).to({x: newX+16, y: newY}, 500);
         createjs.Tween.get(this.container).to({x: newX, y: newY}, 500).call(function () {
             self.canMove = true;
-            self.x = self.container.x+8;
-            self.y = self.container.y+8;
         })
     };
     this.spawn();
 }
 
+function LifeManager() {
+    this.totalHearts = 6;
+    this.hp = 3;
+    this.container = new PIXI.Container();
+    HUDScreen.addChild(this.container);
+    this.container.position.set(100, -240);
+    this.container.width = 400;
+    this.container.height = 100;
+    this.container.scale.set(2, 2);
+    this.sprites = [];
+    for (var i = 0; i < this.totalHearts; i++) {
+        var nh = new Heart(this.container);
+        nh.setPosition(32*i, 136);
+        if (i >= this.hp) {
+            nh.hp.decrease();
+            nh.hp.decrease();
+        }
+        this.sprites.push(nh)
+    }
+    this.increase = function() {
+        for (var i =0; i < this.totalHearts; i++) {
+            if (this.sprites[i].half.visible || this.sprites[i].dead) {
+                this.sprites[i].increase();
+                return;
+            }
+        }
+    };
+    this.decrease = function() {
+        for (var i = this.totalHearts-1; i >=0; i--) {
+            if (!this.sprites[i].dead) {
+                this.sprites[i].decrease();
+                return;
+            }
+        }
+    }
+
+    this.isDead = function () {
+        for (var i = 0; i < this.sprites.length; i++) {
+            if (!this.sprites[i].dead) return false;
+        }
+        return true;
+    }
+}
+
+function Heart(master) {
+    this.master = master;
+    this.full = new PIXI.Sprite.fromFrame('heart1');
+    this.master.addChild(this.full);
+    this.half = new PIXI.Sprite.fromFrame('heart2');
+    this.half.visible = false;
+    this.master.addChild(this.half);
+
+    this.dead = false;
+
+    var self = this;
+    this.hp = StateMachine.create({
+        initial: {state: 'full', event: 'init'},
+        error: function() {},
+        events: [
+            {name: 'increase', from: 'full', to: 'full'},
+            {name: 'increase', from: 'half', to: 'full'},
+            {name: 'increase', from: 'dead', to: 'half'},
+
+            {name: 'decrease', from: 'dead', to: 'dead'},
+            {name: 'decrease', from: 'half', to: 'dead'},
+            {name: 'decrease', from: 'full', to: 'half'}
+        ],
+        callbacks: {
+            onfull: function() {
+                self.full.visible = true;
+            },
+            onhalf: function() {
+                self.half.visible = true;
+            },
+            ondead: function() {
+                self.dead = true;
+            },
+            onbeforeevent: function() {
+                self.dead = false;
+                self.half.visible = false;
+                self.full.visible = false;
+            }
+        }
+    });
+
+    this.setPosition = function (x, y) {
+        this.full.position.set(x, y);
+        this.half.position.set(x, y)
+    };
+
+    this.increase = function () {this.hp.increase()};
+    this.decrease = function () {this.hp.decrease()};
+
+    this.remove = function () {
+        this.master.removeChild(self.full);
+        this.master.removeChild(self.half);
+    };
+
+    this.spawn = function () {
+        this.spawn = function() {
+            var newX = randint(1, map_width) * TILE_SIZE;
+            var newY = randint(1, map_height) * TILE_SIZE;
+            while (map[newY/TILE_SIZE][newX/TILE_SIZE] > 0) {
+                newX = randint(1, map_width) * TILE_SIZE;
+                newY = randint(1, map_height) * TILE_SIZE;
+            }
+            map[newY/TILE_SIZE][newX/TILE_SIZE] = 4;
+            this.setPosition(newX, newY);
+        };
+    }
+}
+
+var bgAudio;
+var audioButton;
+
+function AudioButton() {
+    this.onImage = new PIXI.Sprite.fromFrame('audio on');
+    HUDScreen.addChild(this.onImage);
+    this.onImage.position.set(480, 500);
+    this.onImage.interactive = true;
+    this.offImage = new PIXI.Sprite.fromFrame('audio off');
+    this.offImage.visible = false;
+    this.offImage.interactive = true;
+    HUDScreen.addChild(this.offImage);
+    this.offImage.position.set(480, 500);
+    var self = this;
+    this.state = StateMachine.create({
+        initial: {state: 'on', event: 'init'},
+        error: function() {},
+        events: [
+            {name: 'toggle', from: 'off', to: 'on'},
+            {name: 'toggle', from: 'on', to: 'off'}
+        ],
+        callbacks:{
+            onoff: function() {
+                self.onImage.visible = false;
+                self.offImage.visible = true;
+                bgAudio.stop();
+            },
+            onon: function() {
+                self.offImage.visible = false;
+                self.onImage.visible = true;
+                bgAudio.play();
+            }
+        }
+    });
+
+    this.toggle = function() {
+        this.state.toggle();
+    };
+
+    this.onImage.on('mousedown', function() {self.toggle();});
+    this.offImage.on('mousedown', function() {self.toggle();});
+}
+
 PIXI.loader
     .add('tiles.json')
+    .add('background.mp3')
     .load(ready);
 
 var hero;
+
+function resetGame() {
+    numCoins = randint(0, 20);
+    coinText.text = "0/"+numCoins;
+
+    for (var i = 0; i < numEnemies; i++) {
+        enemies.push(new Enemy(mapContainer));
+    }
+
+    for (i = 0; i < numHearts; i++) {
+        var h = new Heart(mapContainer);
+        h.spawn();
+        hearts.push(h);
+    }
+
+    hero = new Hero(mapContainer);
+
+    spawnCoins(numCoins);
+}
 
 function ready() {
     generateMap();
@@ -346,8 +805,17 @@ function ready() {
     circly.anchor.set(0.5, 0.5);
     circly.position.set(WIDTH/2-100, HEIGHT/2);
 
-    hero = new Hero(mapContainer);
-    //hero.container.position.set(32, 32);
+    lifeManager = new LifeManager();
+
+    audioButton = new AudioButton();
+
+    var coin = new PIXI.Sprite.fromFrame('coin');
+    HUDScreen.addChild(coin);
+    coin.position.set(0, 100);
+
+    bgAudio = PIXI.audioManager.getAudio("background.mp3");
+    bgAudio.loop = true;
+    bgAudio.play();
 
     screen.welcome();
 }
@@ -357,15 +825,14 @@ function keydown(e) {
     else if (LEFT_BTNS.indexOf(e.keyCode) > -1) leftPress = true;
     else if (UP_BTNS.indexOf(e.keyCode) > -1) upPress = true;
     else if (DOWN_BTNS.indexOf(e.keyCode) > -1) downPress = true;
-    //else if (e.keyCode == MUTE_BTN) {
-    //    muted = !muted;
-    //    if (muted) {
-    //        bgAudio.stop();
-    //    }
-    //    else {
-    //        bgAudio.play();
-    //    }
-    //}
+    else if (LEFT_FIRE_BTN == e.keyCode) leftFirePress = true;
+    else if (RIGHT_FIRE_BTN == e.keyCode) rightFirePress = true;
+    else if (UP_FIRE_BTN == e.keyCode) upFirePress = true;
+    else if (DOWN_FIRE_BTN == e.keyCode) downFirePress = true;
+    else if (e.keyCode == MUTE_BTN) {
+        audioButton.toggle();
+    }
+    else if (e.keyCode == 67) collected = numCoins;
 }
 
 function keyup(e) {
@@ -374,6 +841,10 @@ function keyup(e) {
     else if (LEFT_BTNS.indexOf(e.keyCode) > -1) leftPress = false;
     else if (UP_BTNS.indexOf(e.keyCode) > -1) upPress = false;
     else if (DOWN_BTNS.indexOf(e.keyCode) > -1) downPress = false;
+    else if (LEFT_FIRE_BTN == e.keyCode) leftFirePress = false;
+    else if (RIGHT_FIRE_BTN == e.keyCode) rightFirePress = false;
+    else if (UP_FIRE_BTN == e.keyCode) upFirePress = false;
+    else if (DOWN_FIRE_BTN == e.keyCode) downFirePress = false;
 }
 
 window.addEventListener("keydown", keydown);
@@ -397,6 +868,13 @@ function animate() {
         if (upPress == downPress && leftPress == rightPress) {
             hero.move('standing');
         }
+        if (upFirePress) hero.attack('up');
+        if (downFirePress) hero.attack('down');
+        if (rightFirePress) hero.attack('right');
+        if (leftFirePress) hero.attack('left');
+
+        if (lifeManager.isDead()) screen.lose();
+        if (numCoins == collected) resetGame();
     }
     renderer.render(stage);
 }
